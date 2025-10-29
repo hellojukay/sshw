@@ -72,7 +72,6 @@ func GetConfig() []*Node {
 }
 
 func LoadConfig(path string) error {
-	println(path)
 	b, err := LoadConfigBytes(path, "~/.sshw", "~/.sshw.yml", "~/.sshw.yaml")
 	if err != nil {
 		return err
