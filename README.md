@@ -5,16 +5,14 @@
 ssh client wrapper for automatic login.
 
 ![usage](./assets/sshw-demo.gif)
-
-## install
-
-use `go get`
-
+# install
 ```
-go install github.com/yinheli/sshw/cmd/sshw@latest
+go install github.com/hellojukay/sshw@latest
 ```
-
-or download binary from [releases](//github.com/yinheli/sshw/releases).
+## build
+```bash
+go build -o sshw ./cmd/sshw
+```
 
 ## config
 

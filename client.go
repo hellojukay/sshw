@@ -3,7 +3,6 @@ package sshw
 import (
 	"bufio"
 	"fmt"
-	"io"
 	"net"
 	"os"
 	"os/user"
@@ -246,14 +245,9 @@ func (c *defaultClient) Login() {
 		stdinPipe.Write([]byte(shell.Cmd + "\r"))
 	}
 
-	// change stdin to user
-	go func() {
-		_, err = io.Copy(stdinPipe, os.Stdin)
-		if err != io.EOF {
-			l.Error(err)
-		}
-		session.Close()
-	}()
+	// 启动可中断的输入转发（按操作系统实现）
+	done := make(chan struct{})
+	go forwardInput(fd, stdinPipe, done)
 
 	// interval get terminal size
 	// fix resize issue
@@ -289,4 +283,7 @@ func (c *defaultClient) Login() {
 	}()
 
 	session.Wait()
+
+	// 停止输入转发
+	close(done)
 }
