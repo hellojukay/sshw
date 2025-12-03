@@ -5,22 +5,35 @@ package sshw
 import (
 	"io"
 	"syscall"
-	"time"
+
+	"golang.org/x/sys/unix"
 )
 
-// forwardInput on Unix-like systems uses non-blocking reads to allow
-// graceful termination when the SSH session ends.
+// forwardInput on Unix-like systems uses poll to wait for input
+// readiness and performs blocking reads. This avoids leaving stdin
+// in non-blocking mode while still allowing timely shutdown.
 func forwardInput(fd int, stdinPipe io.WriteCloser, done <-chan struct{}) {
-	// enable non-blocking mode for stdin
-	_ = syscall.SetNonblock(fd, true)
-	defer syscall.SetNonblock(fd, false)
-
 	buf := make([]byte, 4096)
+	p := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLIN}}
 	for {
 		select {
 		case <-done:
 			return
 		default:
+		}
+
+		// Wait up to 100ms for input readiness
+		_, perr := unix.Poll(p, 100)
+		if perr != nil {
+			// Interrupted or error, retry unless fatal
+			if perr == syscall.EINTR {
+				continue
+			}
+			return
+		}
+		if p[0].Revents&unix.POLLIN == 0 {
+			// No input ready, loop
+			continue
 		}
 
 		n, rerr := syscall.Read(fd, buf)
@@ -30,12 +43,9 @@ func forwardInput(fd int, stdinPipe io.WriteCloser, done <-chan struct{}) {
 			}
 		}
 		if rerr != nil {
-			// expected when no input available
-			if rerr == syscall.EAGAIN || rerr == syscall.EWOULDBLOCK || rerr == syscall.EINTR {
-				time.Sleep(10 * time.Millisecond)
+			if rerr == syscall.EINTR {
 				continue
 			}
-			// other errors: exit
 			return
 		}
 	}

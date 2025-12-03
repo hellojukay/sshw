@@ -257,7 +257,7 @@ func (c *defaultClient) Login() {
 			oh = h
 		)
 		for {
-			cw, ch, err := terminal.GetSize(fd)
+			cw, ch, err := terminal.GetSize(int(os.Stdout.Fd()))
 			if err != nil {
 				break
 			}
