@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/atrox/homedir"
+	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/terminal"
 )
@@ -38,6 +39,7 @@ var (
 
 type Client interface {
 	Login()
+	LoginSFTP()
 }
 
 type defaultClient struct {
@@ -135,58 +137,13 @@ func NewClient(node *Node) Client {
 }
 
 func (c *defaultClient) Login() {
-	host := c.node.Host
-	port := strconv.Itoa(c.node.port())
-	jNodes := c.node.Jump
-
-	var client *ssh.Client
-
-	if len(jNodes) > 0 {
-		jNode := jNodes[0]
-		jc := genSSHConfig(jNode)
-		proxyClient, err := ssh.Dial("tcp", net.JoinHostPort(jNode.Host, strconv.Itoa(jNode.port())), jc.clientConfig)
-		if err != nil {
-			l.Error(err)
-			return
-		}
-		conn, err := proxyClient.Dial("tcp", net.JoinHostPort(host, port))
-		if err != nil {
-			l.Error(err)
-			return
-		}
-		ncc, chans, reqs, err := ssh.NewClientConn(conn, net.JoinHostPort(host, port), c.clientConfig)
-		if err != nil {
-			l.Error(err)
-			return
-		}
-		client = ssh.NewClient(ncc, chans, reqs)
-	} else {
-		client1, err := ssh.Dial("tcp", net.JoinHostPort(host, port), c.clientConfig)
-		client = client1
-		if err != nil {
-			msg := err.Error()
-			// use terminal password retry
-			if strings.Contains(msg, "no supported methods remain") && !strings.Contains(msg, "password") {
-				fmt.Printf("%s@%s's password:", c.clientConfig.User, host)
-				var b []byte
-				b, err = terminal.ReadPassword(int(syscall.Stdin))
-				if err == nil {
-					p := string(b)
-					if p != "" {
-						c.clientConfig.Auth = append(c.clientConfig.Auth, ssh.Password(p))
-					}
-					fmt.Println()
-					client, err = ssh.Dial("tcp", net.JoinHostPort(host, port), c.clientConfig)
-				}
-			}
-		}
-		if err != nil {
-			l.Error(err)
-			return
-		}
+	client := c.createSSHClient()
+	if client == nil {
+		return
 	}
 	defer client.Close()
 
+	host := c.node.Host
 	l.Infof("connect server ssh -p %d %s@%s version: %s\n", c.node.port(), c.node.user(), host, string(client.ServerVersion()))
 
 	session, err := client.NewSession()
@@ -286,4 +243,91 @@ func (c *defaultClient) Login() {
 
 	// 停止输入转发
 	close(done)
+}
+
+func (c *defaultClient) createSSHClient() *ssh.Client {
+	host := c.node.Host
+	port := strconv.Itoa(c.node.port())
+	jNodes := c.node.Jump
+
+	var client *ssh.Client
+
+	if len(jNodes) > 0 {
+		jNode := jNodes[0]
+		jc := genSSHConfig(jNode)
+		proxyClient, err := ssh.Dial("tcp", net.JoinHostPort(jNode.Host, strconv.Itoa(jNode.port())), jc.clientConfig)
+		if err != nil {
+			l.Error(err)
+			return nil
+		}
+		conn, err := proxyClient.Dial("tcp", net.JoinHostPort(host, port))
+		if err != nil {
+			l.Error(err)
+			proxyClient.Close()
+			return nil
+		}
+		ncc, chans, reqs, err := ssh.NewClientConn(conn, net.JoinHostPort(host, port), c.clientConfig)
+		if err != nil {
+			l.Error(err)
+			proxyClient.Close()
+			return nil
+		}
+		client = ssh.NewClient(ncc, chans, reqs)
+	} else {
+		client1, err := ssh.Dial("tcp", net.JoinHostPort(host, port), c.clientConfig)
+		client = client1
+		if err != nil {
+			msg := err.Error()
+			// use terminal password retry
+			if strings.Contains(msg, "no supported methods remain") && !strings.Contains(msg, "password") {
+				fmt.Printf("%s@%s's password:", c.clientConfig.User, host)
+				var b []byte
+				b, err = terminal.ReadPassword(int(syscall.Stdin))
+				if err == nil {
+					p := string(b)
+					if p != "" {
+						c.clientConfig.Auth = append(c.clientConfig.Auth, ssh.Password(p))
+					}
+					fmt.Println()
+					client, err = ssh.Dial("tcp", net.JoinHostPort(host, port), c.clientConfig)
+				}
+			}
+		}
+		if err != nil {
+			l.Error(err)
+			return nil
+		}
+	}
+
+	return client
+}
+
+func (c *defaultClient) LoginSFTP() {
+	client := c.createSSHClient()
+	if client == nil {
+		return
+	}
+	defer client.Close()
+
+	host := c.node.Host
+	l.Infof("connect server sftp -p %d %s@%s\n", c.node.port(), c.node.user(), host)
+
+	sftpClient, err := NewSFTPClient(client)
+	if err != nil {
+		l.Error(err)
+		return
+	}
+	defer sftpClient.Close()
+
+	shell := NewSFTPShell(sftpClient, c.node)
+	shell.Run()
+}
+
+// NewSFTPClient creates an SFTP client from an SSH client
+func NewSFTPClient(sshClient *ssh.Client) (*sftp.Client, error) {
+	sftpClient, err := sftp.NewClient(sshClient)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create SFTP client: %w", err)
+	}
+	return sftpClient, nil
 }

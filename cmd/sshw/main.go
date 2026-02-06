@@ -106,11 +106,56 @@ func main() {
 			return
 		}
 
-		client := sshw.NewClient(node)
-		client.Login()
-		flushStdin()
+		// 选择连接类型
+		connType := chooseConnType(node)
+		if connType == nil {
+			continue // 用户取消选择
+		}
 
+		client := sshw.NewClient(node)
+
+		// 根据选择的连接类型执行相应操作
+		switch *connType {
+		case sshw.ConnTypeSSH:
+			client.Login()
+		case sshw.ConnTypeSFTP:
+			client.LoginSFTP()
+		}
+
+		flushStdin()
 	}
+}
+
+// chooseConnType displays connection type selection menu
+func chooseConnType(node *sshw.Node) *sshw.ConnType {
+	connTypes := []sshw.ConnType{
+		sshw.ConnTypeSSH,
+		sshw.ConnTypeSFTP,
+	}
+
+	items := make([]string, len(connTypes))
+	for i, ct := range connTypes {
+		items[i] = fmt.Sprintf("%s - %s", ct.String(), ct.Description())
+	}
+
+	prompt := promptui.Select{
+		Label:        fmt.Sprintf("Select connection type for %s", node.Name),
+		Items:        items,
+		Size:         20,
+		HideSelected: true,
+		Templates: &promptui.SelectTemplates{
+			Label:    "✨ {{ . | green}}",
+			Active:   "➤ {{ . | cyan }}",
+			Inactive: "  {{ . | faint }}",
+		},
+	}
+
+	index, _, err := prompt.Run()
+	if err != nil {
+		return nil
+	}
+
+	return &connTypes[index]
 }
 
 func choose(parent, trees []*sshw.Node) *sshw.Node {
