@@ -148,8 +148,12 @@ func (s *SFTPShell) downloadFile(args []string) {
 
 	if len(args) > 1 {
 		localPath = args[1]
+		if !filepath.IsAbs(localPath) {
+			localPath = filepath.Join(s.localPwd, localPath)
+		}
 	} else {
-		localPath = filepath.Base(remotePath)
+		// 默认保存到 localPwd
+		localPath = filepath.Join(s.localPwd, filepath.Base(remotePath))
 	}
 
 	// Get file size first
@@ -204,6 +208,9 @@ func (s *SFTPShell) uploadFile(args []string) {
 	}
 
 	localPath := args[0]
+	if !filepath.IsAbs(localPath) {
+		localPath = filepath.Join(s.localPwd, localPath)
+	}
 	remotePath := ""
 
 	if len(args) > 1 {

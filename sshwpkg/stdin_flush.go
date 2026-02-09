@@ -1,13 +1,14 @@
 //go:build !windows
 
-package main
+package sshw
 
 import (
 	"os"
 	"syscall"
 )
 
-func flushStdin() {
+// FlushStdin clears any pending input from stdin
+func FlushStdin() {
 	fd := int(os.Stdin.Fd())
 	// Set non-blocking mode
 	if err := syscall.SetNonblock(fd, true); err != nil {

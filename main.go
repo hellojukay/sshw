@@ -122,7 +122,7 @@ func main() {
 			client.LoginSFTP()
 		}
 
-		flushStdin()
+		sshw.FlushStdin()
 	}
 }
 
@@ -161,10 +161,12 @@ func chooseConnType(node *sshw.Node) *sshw.ConnType {
 }
 
 func choose(parent, trees []*sshw.Node) *sshw.Node {
-	// 添加退出选项到根级别菜单
+	// 添加退出选项到根级别菜单（仅当不存在时）
 	if parent == nil {
-		exitNode := &sshw.Node{Name: exit}
-		trees = append([]*sshw.Node{exitNode}, trees...)
+		if len(trees) == 0 || trees[0].Name != exit {
+			exitNode := &sshw.Node{Name: exit}
+			trees = append([]*sshw.Node{exitNode}, trees...)
+		}
 	}
 
 	prompt := promptui.Select{
