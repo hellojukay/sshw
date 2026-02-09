@@ -9,13 +9,10 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
-	"github.com/atrox/homedir"
 	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
-	"golang.org/x/crypto/ssh/terminal"
 )
 
 var (
@@ -61,11 +58,9 @@ func genSSHConfig(node *Node) *defaultClient {
 		pemBytes, err = os.ReadFile(filepath.Join(u.HomeDir, ".ssh/id_rsa"))
 	} else {
 		// if node.KeyPath start with ~ , replace it with user's home dir
-		if strings.HasPrefix(node.KeyPath, "~") {
-			node.KeyPath, err = homedir.Expand(node.KeyPath)
-			if err != nil {
-				l.Errorf("expand home path error: %v", err)
-			}
+		node.KeyPath, err = expandHomePath(node.KeyPath)
+		if err != nil {
+			l.Errorf("expand home path error: %v", err)
 		}
 		pemBytes, err = os.ReadFile(node.KeyPath)
 	}
@@ -105,12 +100,11 @@ func genSSHConfig(node *Node) *defaultClient {
 					return nil, err
 				}
 			} else {
-				b, err := terminal.ReadPassword(int(syscall.Stdin))
+				answer, err := readPassword()
 				if err != nil {
 					return nil, err
 				}
-				fmt.Println()
-				answers = append(answers, string(b))
+				answers = append(answers, answer)
 			}
 		}
 		return answers, nil
@@ -153,17 +147,17 @@ func (c *defaultClient) Login() {
 	}
 	defer session.Close()
 
-	fd := int(os.Stdin.Fd())
-	state, err := terminal.MakeRaw(fd)
+	terminalMgr := newTerminalManager()
+	restore, err := terminalMgr.makeRaw()
 	if err != nil {
 		l.Error(err)
 		return
 	}
-	defer terminal.Restore(fd, state)
+	defer restore()
 
 	//changed fd to int(os.Stdout.Fd()) becaused terminal.GetSize(fd) doesn't work in Windows
 	//refrence: https://github.com/golang/go/issues/20388
-	w, h, err := terminal.GetSize(int(os.Stdout.Fd()))
+	w, h, err := terminalMgr.size()
 
 	if err != nil {
 		l.Error(err)
@@ -204,32 +198,11 @@ func (c *defaultClient) Login() {
 
 	// 启动可中断的输入转发（按操作系统实现）
 	done := make(chan struct{})
-	go forwardInput(fd, stdinPipe, done)
+	go forwardInput(terminalMgr.stdinFD, stdinPipe, done)
 
 	// interval get terminal size
 	// fix resize issue
-	go func() {
-		var (
-			ow = w
-			oh = h
-		)
-		for {
-			cw, ch, err := terminal.GetSize(int(os.Stdout.Fd()))
-			if err != nil {
-				break
-			}
-
-			if cw != ow || ch != oh {
-				err = session.WindowChange(ch, cw)
-				if err != nil {
-					break
-				}
-				ow = cw
-				oh = ch
-			}
-			time.Sleep(time.Second)
-		}
-	}()
+	terminalMgr.startResizeMonitor(session, w, h, done)
 
 	// send keepalive
 	go func() {
@@ -281,14 +254,11 @@ func (c *defaultClient) createSSHClient() *ssh.Client {
 			// use terminal password retry
 			if strings.Contains(msg, "no supported methods remain") && !strings.Contains(msg, "password") {
 				fmt.Printf("%s@%s's password:", c.clientConfig.User, host)
-				var b []byte
-				b, err = terminal.ReadPassword(int(syscall.Stdin))
+				p, err := readPassword()
 				if err == nil {
-					p := string(b)
 					if p != "" {
 						c.clientConfig.Auth = append(c.clientConfig.Auth, ssh.Password(p))
 					}
-					fmt.Println()
 					client, err = ssh.Dial("tcp", net.JoinHostPort(host, port), c.clientConfig)
 				}
 			}
@@ -326,10 +296,10 @@ func (c *defaultClient) LoginSFTP() {
 // NewSFTPClient creates an SFTP client from an SSH client with performance optimizations
 func NewSFTPClient(sshClient *ssh.Client) (*sftp.Client, error) {
 	sftpClient, err := sftp.NewClient(sshClient,
-		sftp.MaxPacketChecked(32768),            // Increase packet size for better performance
-		sftp.MaxConcurrentRequestsPerFile(64),   // More concurrent requests
-		sftp.UseConcurrentReads(true),           // Enable concurrent reads for downloads
-		sftp.UseConcurrentWrites(true),          // Enable concurrent writes for uploads
+		sftp.MaxPacketChecked(32768),          // Increase packet size for better performance
+		sftp.MaxConcurrentRequestsPerFile(64), // More concurrent requests
+		sftp.UseConcurrentReads(true),         // Enable concurrent reads for downloads
+		sftp.UseConcurrentWrites(true),        // Enable concurrent writes for uploads
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create SFTP client: %w", err)

@@ -4,9 +4,8 @@ import (
 	"fmt"
 	"os"
 	"os/user"
-	"path"
+	"path/filepath"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/atrox/homedir"
@@ -93,7 +92,7 @@ func LoadSshConfig() error {
 		l.Error(err)
 		return nil
 	}
-	f, _ := os.Open(path.Join(u.HomeDir, ".ssh/config"))
+	f, _ := os.Open(filepath.Join(u.HomeDir, ".ssh", "config"))
 	cfg, _ := ssh_config.Decode(f)
 	var nc []*Node
 	for _, host := range cfg.Hosts {
@@ -126,12 +125,14 @@ func LoadSshConfig() error {
 func LoadConfigBytes(names ...string) ([]byte, error) {
 	for i := range names {
 		path := names[i]
-		if strings.HasPrefix(path, "~") {
-			path, _ = homedir.Expand(path)
-		}
-		sshw, err := os.ReadFile(path)
+		expandedPath, err := expandHomePath(path)
 		if err != nil {
-			l.Errorf("read %s error: %v , skiped", path, err)
+			l.Errorf("expand %s error: %v , skiped", path, err)
+			continue
+		}
+		sshw, err := os.ReadFile(expandedPath)
+		if err != nil {
+			l.Errorf("read %s error: %v , skiped", expandedPath, err)
 			continue
 		}
 		return sshw, nil
