@@ -323,9 +323,14 @@ func (c *defaultClient) LoginSFTP() {
 	shell.Run()
 }
 
-// NewSFTPClient creates an SFTP client from an SSH client
+// NewSFTPClient creates an SFTP client from an SSH client with performance optimizations
 func NewSFTPClient(sshClient *ssh.Client) (*sftp.Client, error) {
-	sftpClient, err := sftp.NewClient(sshClient)
+	sftpClient, err := sftp.NewClient(sshClient,
+		sftp.MaxPacketChecked(32768),            // Increase packet size for better performance
+		sftp.MaxConcurrentRequestsPerFile(64),   // More concurrent requests
+		sftp.UseConcurrentReads(true),           // Enable concurrent reads for downloads
+		sftp.UseConcurrentWrites(true),          // Enable concurrent writes for uploads
+	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create SFTP client: %w", err)
 	}

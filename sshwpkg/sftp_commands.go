@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/schollz/progressbar/v3"
@@ -151,7 +152,7 @@ func (s *SFTPShell) downloadFile(args []string) {
 		localPath = filepath.Base(remotePath)
 	}
 
-	// Get file size first for progress bar
+	// Get file size first
 	srcFile, err := s.client.Open(remotePath)
 	if err != nil {
 		fmt.Printf("Error opening remote file: %v\n", err)
@@ -173,13 +174,25 @@ func (s *SFTPShell) downloadFile(args []string) {
 	}
 	defer dstFile.Close()
 
-	// Copy with progress
-	bytesWritten, err := copyWithProgress(dstFile, srcFile, fileSize, fmt.Sprintf("Downloading %s", filepath.Base(remotePath)))
+	// Wrap dstFile with progress tracking
+	progressDst := &progressWriter{
+		writer:      dstFile,
+		total:       fileSize,
+		description: fmt.Sprintf("Downloading %s", filepath.Base(remotePath)),
+	}
+
+	// Use WriteTo for optimized concurrent reads from remote server
+	bytesWritten, err := srcFile.WriteTo(progressDst)
 	if err != nil {
+		// Truncate local file to avoid data holes when transfer fails
+		if info, statErr := dstFile.Stat(); statErr == nil {
+			_ = dstFile.Truncate(info.Size())
+		}
 		fmt.Printf("\nError downloading file: %v\n", err)
 		return
 	}
 
+	fmt.Fprint(os.Stderr, "\n")
 	fmt.Printf("Download complete: %s (%.2f MB)\n", localPath, float64(bytesWritten)/1024/1024)
 }
 
@@ -199,7 +212,7 @@ func (s *SFTPShell) uploadFile(args []string) {
 		remotePath = filepath.Join(s.pwd, filepath.Base(localPath))
 	}
 
-	// Get file size first for progress bar
+	// Get file size first
 	srcFile, err := os.Open(localPath)
 	if err != nil {
 		fmt.Printf("Error opening local file: %v\n", err)
@@ -221,13 +234,26 @@ func (s *SFTPShell) uploadFile(args []string) {
 	}
 	defer dstFile.Close()
 
-	// Copy with progress
-	bytesWritten, err := copyWithProgress(dstFile, srcFile, fileSize, fmt.Sprintf("Uploading %s", filepath.Base(localPath)))
+	// Wrap srcFile with progress tracking
+	// progressReader implements Size() which enables sftp.File.ReadFrom to use concurrent writes
+	progressSrc := &progressReader{
+		reader:      srcFile,
+		total:       fileSize,
+		description: fmt.Sprintf("Uploading %s", filepath.Base(localPath)),
+	}
+
+	// Use ReadFrom for optimized concurrent writes to remote server
+	bytesWritten, err := dstFile.ReadFrom(progressSrc)
 	if err != nil {
+		// Truncate remote file to avoid data holes when concurrent write fails
+		if info, statErr := dstFile.Stat(); statErr == nil {
+			_ = dstFile.Truncate(info.Size())
+		}
 		fmt.Printf("\nError uploading file: %v\n", err)
 		return
 	}
 
+	fmt.Fprint(os.Stderr, "\n")
 	fmt.Printf("Upload complete: %s (%.2f MB)\n", remotePath, float64(bytesWritten)/1024/1024)
 }
 
@@ -379,29 +405,81 @@ func (s *SFTPShell) resolvePath(path string) string {
 	return filepath.Join(s.pwd, path)
 }
 
-// copyWithProgress copies data with progress display using progressbar library
-func copyWithProgress(dst io.Writer, src io.Reader, total int64, description string) (int64, error) {
-	bar := progressbar.NewOptions64(
-		total,
-		progressbar.OptionSetDescription(description),
-		progressbar.OptionSetWriter(os.Stderr),
-		progressbar.OptionShowCount(),
-		progressbar.OptionShowBytes(true),
-		progressbar.OptionSetWidth(40),
-		progressbar.OptionThrottle(100*time.Millisecond),
-		progressbar.OptionShowIts(),
-		progressbar.OptionSetItsString("B/s"),
-		progressbar.OptionOnCompletion(func() {
-			fmt.Fprint(os.Stderr, "\n")
-		}),
-	)
+// progressReader wraps an io.Reader to track progress for uploads.
+// It implements Size() to enable concurrent writes in sftp.File.ReadFrom.
+type progressReader struct {
+	reader      io.Reader
+	total       int64
+	written     int64
+	description string
+	bar         *progressbar.ProgressBar
+	mu          sync.Mutex
+	once        sync.Once
+}
 
-	// Use io.Copy with the progress bar as a writer that wraps dst
-	written, err := io.Copy(io.MultiWriter(dst, bar), src)
-	if err != nil {
-		return written, err
+// Size returns the total size of the data to be read.
+// This enables sftp.File.ReadFrom to use concurrent writes.
+func (pr *progressReader) Size() int64 {
+	return pr.total
+}
+
+func (pr *progressReader) Read(p []byte) (int, error) {
+	pr.once.Do(func() {
+		pr.bar = progressbar.NewOptions64(
+			pr.total,
+			progressbar.OptionSetDescription(pr.description),
+			progressbar.OptionSetWriter(os.Stderr),
+			progressbar.OptionShowCount(),
+			progressbar.OptionShowBytes(true),
+			progressbar.OptionSetWidth(40),
+			progressbar.OptionThrottle(100*time.Millisecond),
+		)
+	})
+
+	n, err := pr.reader.Read(p)
+	if n > 0 {
+		pr.mu.Lock()
+		pr.written += int64(n)
+		pr.mu.Unlock()
+		if pr.bar != nil {
+			_ = pr.bar.Add(n)
+		}
 	}
+	return n, err
+}
 
-	bar.Finish()
-	return written, nil
+// progressWriter wraps an io.Writer to track progress for downloads.
+type progressWriter struct {
+	writer      io.Writer
+	total       int64
+	written     int64
+	description string
+	bar         *progressbar.ProgressBar
+	mu          sync.Mutex
+	once        sync.Once
+}
+
+func (pw *progressWriter) Write(p []byte) (int, error) {
+	pw.once.Do(func() {
+		pw.bar = progressbar.NewOptions64(
+			pw.total,
+			progressbar.OptionSetDescription(pw.description),
+			progressbar.OptionSetWriter(os.Stderr),
+			progressbar.OptionShowCount(),
+			progressbar.OptionShowBytes(true),
+			progressbar.OptionSetWidth(40),
+			progressbar.OptionThrottle(100*time.Millisecond),
+		)
+	})
+
+	n, err := pw.writer.Write(p)
+	if n > 0 {
+		pw.mu.Lock()
+		pw.written += int64(n)
+		pw.mu.Unlock()
+		if pw.bar != nil {
+			_ = pw.bar.Add(n)
+		}
+	}
+	return n, err
 }

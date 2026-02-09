@@ -9,7 +9,7 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/hellojukay/sshw"
+	"github.com/hellojukay/sshw/sshwpkg"
 	"github.com/manifoldco/promptui"
 )
 
@@ -135,7 +135,9 @@ func chooseConnType(node *sshw.Node) *sshw.ConnType {
 
 	items := make([]string, len(connTypes))
 	for i, ct := range connTypes {
-		items[i] = fmt.Sprintf("%s - %s", ct.String(), ct.Description())
+		// 使用固定宽度的标签（左对齐，5个字符宽度）确保对齐
+		label := fmt.Sprintf("%-5s", ct.String())
+		items[i] = fmt.Sprintf("%s - %s", label, ct.Description())
 	}
 
 	prompt := promptui.Select{
