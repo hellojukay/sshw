@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
-	"strings"
 	"sync"
 	"time"
 
@@ -17,7 +17,7 @@ import (
 func (s *SFTPShell) listRemote(args []string) {
 	path := s.pwd
 	if len(args) > 0 {
-		path = s.resolvePath(args[0])
+		path = resolveRemotePath(s.pwd, s.node.user(), args[0])
 	}
 
 	files, err := s.client.ReadDir(path)
@@ -33,7 +33,12 @@ func (s *SFTPShell) listRemote(args []string) {
 func (s *SFTPShell) listLocal(args []string) {
 	path := s.localPwd
 	if len(args) > 0 {
-		path = args[0]
+		resolved, err := resolveLocalPath(s.localPwd, args[0])
+		if err != nil {
+			fmt.Printf("Error resolving local path: %v\n", err)
+			return
+		}
+		path = resolved
 	}
 
 	files, err := os.ReadDir(path)
@@ -88,7 +93,7 @@ func (s *SFTPShell) changeRemoteDir(args []string) {
 		return
 	}
 
-	newPath := s.resolvePath(args[0])
+	newPath := resolveRemotePath(s.pwd, s.node.user(), args[0])
 
 	// Verify directory exists
 	info, err := s.client.Stat(newPath)
@@ -112,19 +117,10 @@ func (s *SFTPShell) changeLocalDir(args []string) {
 		return
 	}
 
-	// Expand ~
-	path := args[0]
-	if strings.HasPrefix(path, "~") {
-		home, _ := os.UserHomeDir()
-		path = filepath.Join(home, path[1:])
-	}
-
-	// Resolve to absolute path
-	var resolvedPath string
-	if filepath.IsAbs(path) {
-		resolvedPath = path
-	} else {
-		resolvedPath = filepath.Join(s.localPwd, path)
+	resolvedPath, err := resolveLocalPath(s.localPwd, args[0])
+	if err != nil {
+		fmt.Printf("Error resolving local path: %v\n", err)
+		return
 	}
 
 	// Verify directory exists
@@ -133,7 +129,7 @@ func (s *SFTPShell) changeLocalDir(args []string) {
 		return
 	}
 
-	s.localPwd = filepath.Clean(resolvedPath)
+	s.localPwd = resolvedPath
 }
 
 // downloadFile downloads file from remote to local
@@ -143,13 +139,15 @@ func (s *SFTPShell) downloadFile(args []string) {
 		return
 	}
 
-	remotePath := s.resolvePath(args[0])
+	remotePath := resolveRemotePath(s.pwd, s.node.user(), args[0])
 	localPath := ""
 
 	if len(args) > 1 {
-		localPath = args[1]
-		if !filepath.IsAbs(localPath) {
-			localPath = filepath.Join(s.localPwd, localPath)
+		var err error
+		localPath, err = resolveLocalPath(s.localPwd, args[1])
+		if err != nil {
+			fmt.Printf("Error resolving local path: %v\n", err)
+			return
 		}
 	} else {
 		// 默认保存到 localPwd
@@ -208,15 +206,17 @@ func (s *SFTPShell) uploadFile(args []string) {
 	}
 
 	localPath := args[0]
-	if !filepath.IsAbs(localPath) {
-		localPath = filepath.Join(s.localPwd, localPath)
+	localPath, err := resolveLocalPath(s.localPwd, localPath)
+	if err != nil {
+		fmt.Printf("Error resolving local path: %v\n", err)
+		return
 	}
 	remotePath := ""
 
 	if len(args) > 1 {
-		remotePath = s.resolvePath(args[1])
+		remotePath = resolveRemotePath(s.pwd, s.node.user(), args[1])
 	} else {
-		remotePath = filepath.Join(s.pwd, filepath.Base(localPath))
+		remotePath = path.Join(s.pwd, filepath.Base(localPath))
 	}
 
 	// Get file size first
@@ -271,7 +271,7 @@ func (s *SFTPShell) makeRemoteDir(args []string) {
 		return
 	}
 
-	path := s.resolvePath(args[0])
+	path := resolveRemotePath(s.pwd, s.node.user(), args[0])
 	err := s.client.Mkdir(path)
 	if err != nil {
 		fmt.Printf("Error creating directory: %v\n", err)
@@ -288,9 +288,10 @@ func (s *SFTPShell) makeLocalDir(args []string) {
 		return
 	}
 
-	path := args[0]
-	if !filepath.IsAbs(path) {
-		path = filepath.Join(s.localPwd, path)
+	path, err := resolveLocalPath(s.localPwd, args[0])
+	if err != nil {
+		fmt.Printf("Error resolving local path: %v\n", err)
+		return
 	}
 
 	err := os.MkdirAll(path, 0755)
@@ -309,7 +310,7 @@ func (s *SFTPShell) removeRemote(args []string) {
 		return
 	}
 
-	path := s.resolvePath(args[0])
+	path := resolveRemotePath(s.pwd, s.node.user(), args[0])
 
 	info, err := s.client.Stat(path)
 	if err != nil {
@@ -338,9 +339,10 @@ func (s *SFTPShell) removeLocal(args []string) {
 		return
 	}
 
-	path := args[0]
-	if !filepath.IsAbs(path) {
-		path = filepath.Join(s.localPwd, path)
+	path, err := resolveLocalPath(s.localPwd, args[0])
+	if err != nil {
+		fmt.Printf("Error resolving local path: %v\n", err)
+		return
 	}
 
 	err := os.RemoveAll(path)
@@ -359,8 +361,8 @@ func (s *SFTPShell) moveRemote(args []string) {
 		return
 	}
 
-	oldPath := s.resolvePath(args[0])
-	newPath := s.resolvePath(args[1])
+	oldPath := resolveRemotePath(s.pwd, s.node.user(), args[0])
+	newPath := resolveRemotePath(s.pwd, s.node.user(), args[1])
 
 	err := s.client.Rename(oldPath, newPath)
 	if err != nil {
@@ -378,15 +380,16 @@ func (s *SFTPShell) moveLocal(args []string) {
 		return
 	}
 
-	oldPath := args[0]
-	newPath := args[1]
-
-	if !filepath.IsAbs(oldPath) {
-		oldPath = filepath.Join(s.localPwd, oldPath)
+	oldPath, err := resolveLocalPath(s.localPwd, args[0])
+	if err != nil {
+		fmt.Printf("Error resolving local path: %v\n", err)
+		return
 	}
 
-	if !filepath.IsAbs(newPath) {
-		newPath = filepath.Join(s.localPwd, newPath)
+	newPath, err := resolveLocalPath(s.localPwd, args[1])
+	if err != nil {
+		fmt.Printf("Error resolving local path: %v\n", err)
+		return
 	}
 
 	err := os.Rename(oldPath, newPath)
@@ -396,20 +399,6 @@ func (s *SFTPShell) moveLocal(args []string) {
 	}
 
 	fmt.Printf("Moved: %s -> %s\n", oldPath, newPath)
-}
-
-// resolvePath resolves relative paths against current remote directory
-func (s *SFTPShell) resolvePath(path string) string {
-	if strings.HasPrefix(path, "/") {
-		return path
-	}
-	if path == "~" {
-		return "/home/" + s.node.user()
-	}
-	if strings.HasPrefix(path, "~/") {
-		return "/home/" + s.node.user() + path[2:]
-	}
-	return filepath.Join(s.pwd, path)
 }
 
 // progressReader wraps an io.Reader to track progress for uploads.
