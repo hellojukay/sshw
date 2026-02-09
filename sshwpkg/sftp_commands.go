@@ -294,7 +294,7 @@ func (s *SFTPShell) makeLocalDir(args []string) {
 		return
 	}
 
-	err := os.MkdirAll(path, 0755)
+	err = os.MkdirAll(path, 0755)
 	if err != nil {
 		fmt.Printf("Error creating directory: %v\n", err)
 		return
@@ -345,7 +345,7 @@ func (s *SFTPShell) removeLocal(args []string) {
 		return
 	}
 
-	err := os.RemoveAll(path)
+	err = os.RemoveAll(path)
 	if err != nil {
 		fmt.Printf("Error removing: %v\n", err)
 		return
@@ -392,7 +392,7 @@ func (s *SFTPShell) moveLocal(args []string) {
 		return
 	}
 
-	err := os.Rename(oldPath, newPath)
+	err = os.Rename(oldPath, newPath)
 	if err != nil {
 		fmt.Printf("Error moving: %v\n", err)
 		return
